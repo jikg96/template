@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Database
+*.db
+*.sqlite3
+
+# Docker
+pgdata/
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 제출물 (지원자가 생성)
+diagnosis_log.md
+verification_design.md
+report.md

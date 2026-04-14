@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+.env
+*.md
+!requirements.txt
+tests/
+docs/
+frontend/
+backend/
+data/
+alembic/
