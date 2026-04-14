@@ -347,6 +347,28 @@ def _seed_data_inconsistencies(db: Session):
     """
     from sqlalchemy import func
 
+    # --- 0. D1 Infinity 트리거 보장 ---
+    # 활성 회원권이 있으나 방문(PT 세션)이 전혀 없는 회원을 보장
+    # calculate_remaining_days()에서 avg_visits=0 → division by zero → infinity
+    no_visit_ids = [6, 7, 8]
+    for mid in no_visit_ids:
+        member = db.query(Member).filter(Member.id == mid).first()
+        if member:
+            member.status = "active"
+        # 기존 활성 회원권 확인, 없으면 추가
+        active_ms = db.query(Membership).filter(
+            Membership.member_id == mid, Membership.status == "active"
+        ).first()
+        if not active_ms:
+            db.add(Membership(
+                member_id=mid, type="12month",
+                start_date=date(2025, 10, 1), duration_days=365,
+                price=840000, status="active",
+                created_at=datetime(2025, 10, 1, 9, 0),
+            ))
+        # 이 회원의 모든 PT 세션을 삭제 (방문 0 보장)
+        db.query(PTSession).filter(PTSession.member_id == mid).delete()
+
     # --- 1. 회원 상태 vs 회원권 상태 불일치 ---
     # members.status = "active" 이지만 유효한 회원권이 없는 회원 (유령 활성)
     # 실제: 회원권 만료 시 status를 갱신하는 배치/트리거가 없어서 발생
