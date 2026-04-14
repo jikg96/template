@@ -118,6 +118,7 @@ def seed():
         _seed_pt_data(db)
         _seed_freeze_periods(db)
         _seed_transfers(db)
+        _seed_data_inconsistencies(db)
         db.commit()
         print("시드 데이터 생성 완료!")
         print(f"  센터: {db.query(Center).count()}")
@@ -335,6 +336,86 @@ def _seed_transfers(db: Session):
 
         # 회원의 center_id를 새 센터로 업데이트
         # (실제로는 이관 시점에 업데이트되어야 하지만 시드에서 바로 반영)
+    db.flush()
+
+
+def _seed_data_inconsistencies(db: Session):
+    """
+    운영 중 축적된 데이터 정합성 이슈 재현
+    실제 서비스에서는 상태 동기화 배치가 없거나,
+    수동 데이터 입력/수정으로 인해 테이블 간 데이터가 불일치하는 경우가 빈번함.
+    """
+    from sqlalchemy import func
+
+    # --- 1. 회원 상태 vs 회원권 상태 불일치 ---
+    # members.status = "active" 이지만 유효한 회원권이 없는 회원 (유령 활성)
+    # 실제: 회원권 만료 시 status를 갱신하는 배치/트리거가 없어서 발생
+    ghost_active_ids = list(range(181, 191))  # 10명
+    for mid in ghost_active_ids:
+        member = db.query(Member).filter(Member.id == mid).first()
+        if member:
+            member.status = "active"
+
+    # 이 회원들의 회원권을 모두 만료 상태로 설정
+    ghost_memberships = db.query(Membership).filter(
+        Membership.member_id.in_(ghost_active_ids)
+    ).all()
+    for ms in ghost_memberships:
+        ms.status = "expired"
+        ms.start_date = date(2025, 1, 1)
+        ms.duration_days = 30  # 2025-01-31에 이미 만료
+
+    # 반대: members.status = "inactive" 이지만 유효한 회원권이 있는 회원
+    # 실제: 재등록 시 status 갱신을 빠뜨린 케이스
+    phantom_inactive_ids = list(range(191, 196))  # 5명
+    for mid in phantom_inactive_ids:
+        member = db.query(Member).filter(Member.id == mid).first()
+        if member:
+            member.status = "inactive"
+
+    # 이 회원들에게 유효한 활성 회원권 부여
+    for mid in phantom_inactive_ids:
+        active_ms = db.query(Membership).filter(
+            Membership.member_id == mid,
+            Membership.status == "active",
+        ).first()
+        if not active_ms:
+            db.add(Membership(
+                member_id=mid,
+                type="12month",
+                start_date=date(2026, 1, 15),
+                duration_days=365,
+                price=840000,
+                status="active",
+                created_at=datetime(2026, 1, 15, 9, 0),
+            ))
+
+    # --- 2. PT 세션 수 vs 패키지 총 횟수 불일치 ---
+    # pt_packages.total_sessions = 10인데, 완료된 세션이 13개인 케이스
+    # 실제: 프론트에서 세션 추가 시 잔여 횟수 체크 없이 등록한 결과
+    overflow_pkgs = db.query(PTPackage).filter(
+        PTPackage.status == "active",
+    ).order_by(PTPackage.id).limit(3).all()
+
+    for pkg in overflow_pkgs:
+        current_completed = db.query(func.count(PTSession.id)).filter(
+            PTSession.package_id == pkg.id,
+            PTSession.status.in_(["completed", "no_show"]),
+        ).scalar() or 0
+
+        # 총 횟수를 초과하도록 세션 추가
+        extra_needed = pkg.total_sessions - current_completed + random.randint(2, 4)
+        if extra_needed > 0:
+            for _ in range(extra_needed):
+                db.add(PTSession(
+                    package_id=pkg.id,
+                    member_id=pkg.member_id,
+                    trainer_id=pkg.trainer_id,
+                    scheduled_at=random_datetime(date(2025, 9, 1), date(2026, 3, 15)),
+                    status="completed",
+                    is_trial=False,
+                ))
+
     db.flush()
 
 
