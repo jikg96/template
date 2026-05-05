@@ -38,7 +38,6 @@ pgdata/
 .coverage
 htmlcov/
 
-# 제출물 (지원자가 생성)
-diagnosis_log.md
-verification_design.md
-report.md
+# (제출 시 .gitignore에서 제출물 항목 제거. 템플릿에 있던
+#  diagnosis_log.md / verification_design.md / report.md ignore 규칙은
+#  README가 명시한 필수 제출물과 모순되어 풀었음.)
