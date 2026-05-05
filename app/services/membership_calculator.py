@@ -19,9 +19,13 @@ def calculate_expiry_date(membership: Membership) -> date:
 
 def calculate_remaining_days(membership: Membership, visits: list) -> dict:
     """
-    방문 패턴 기반 잔여 일수 예측
-    - visits: 해당 회원의 방문(PT 세션) 리스트
-    - 월평균 방문 횟수로 잔여 기간을 추정
+    회원권 잔여 일수 + 방문 패턴 통계.
+
+    회원권은 '기간(일)' 기반 자원이므로 잔여 일수가 곧 소진까지의 시간이다.
+    visits는 회원의 활동성을 보여주는 보조 지표로만 사용한다.
+
+    주의: 'PT 패키지 잔여 횟수'를 방문 패턴으로 나눠 추정하는 정밀한 PT 소진 예측은
+    이 함수의 책임이 아니다. PTPackage 정보가 필요하므로 별도 함수로 분리해야 한다.
     """
     today = date.today()
     expiry = calculate_expiry_date(membership)
@@ -35,25 +39,18 @@ def calculate_remaining_days(membership: Membership, visits: list) -> dict:
             "status": "expired",
         }
 
-    # 경과 월수 계산
+    # 경과 월수 (가입 당월은 1로 보정)
     start = membership.start_date
     months_elapsed = (today.year - start.year) * 12 + (today.month - start.month)
-    if months_elapsed == 0:
-        months_elapsed = 1  # 가입 당월은 1로 처리
+    if months_elapsed <= 0:
+        months_elapsed = 1
 
-    # 월평균 방문 횟수
-    avg_visits_per_month = len(visits) / months_elapsed if months_elapsed > 0 else 0
-
-    # 잔여 PT 횟수 기반 예상 소진일 계산
-    # 총 패키지 횟수에서 사용 횟수를 빼고, 월평균 방문으로 나눠서 개월 수 산출
-    total_sessions = len(visits) + 10  # 간이 계산: 사용분 + 잔여 10회 가정
-    remaining_sessions = total_sessions - len(visits)
-    estimated_months = remaining_sessions / avg_visits_per_month if avg_visits_per_month else float('inf')
-    estimated_exhaustion_days = estimated_months * 30
+    avg_visits_per_month = len(visits) / months_elapsed
 
     return {
         "remaining_days": remaining_calendar_days,
         "avg_visits_per_month": round(avg_visits_per_month, 1),
-        "estimated_exhaustion_days": estimated_exhaustion_days,
+        # 회원권은 시간 기반이므로 패턴과 무관하게 잔여 달력 일수가 소진까지 일수.
+        "estimated_exhaustion_days": remaining_calendar_days,
         "status": "active",
     }

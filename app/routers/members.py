@@ -123,18 +123,13 @@ def get_member_detail(member_id: int, db: Session = Depends(get_db)):
 
         prediction = calculate_remaining_days(membership, visits)
 
-        # float → JSON 변환 (inf, nan 처리)
-        exhaustion = prediction["estimated_exhaustion_days"]
-        if isinstance(exhaustion, float) and (exhaustion == float('inf') or exhaustion != exhaustion):
-            exhaustion = str(exhaustion)  # "Infinity" 또는 "nan"
-
         result["membership"] = {
             "id": membership.id,
             "type": membership.type,
             "start_date": str(membership.start_date),
             "expiry_date": str(expiry_date),
             "remaining_days": prediction["remaining_days"],
-            "estimated_exhaustion_days": exhaustion,
+            "estimated_exhaustion_days": prediction["estimated_exhaustion_days"],
             "avg_visits_per_month": prediction["avg_visits_per_month"],
             "status": prediction["status"],
         }
