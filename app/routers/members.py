@@ -150,9 +150,11 @@ def get_member_detail(member_id: int, db: Session = Depends(get_db)):
     pt_summary = []
     total_remaining = 0
     for pkg in packages:
+        # BR-3.2/BR-5.3: 패키지별 독립 카운트, is_trial 제외, cancelled 제외
         used = db.query(PTSession).filter(
-            PTSession.member_id == member_id,
+            PTSession.package_id == pkg.id,
             PTSession.status.in_(["completed", "no_show"]),
+            PTSession.is_trial.is_(False),
         ).count()
         remaining = max(pkg.total_sessions - used, 0)
         total_remaining += remaining

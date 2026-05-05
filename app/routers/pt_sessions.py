@@ -137,14 +137,15 @@ def get_remaining_sessions(member_id: int, db: Session = Depends(get_db)):
     total_remaining = 0
 
     for pkg in packages:
-        # 사용된 세션 수 (completed + no_show)
+        # BR-5.3: 사용 횟수 = 해당 패키지의 completed + no_show. cancelled 제외.
+        # BR-3.2: 무료 체험(is_trial)은 잔여 횟수 계산에서 제외.
         used = db.query(PTSession).filter(
-            PTSession.member_id == member_id,
+            PTSession.package_id == pkg.id,
             PTSession.status.in_(["completed", "no_show"]),
+            PTSession.is_trial.is_(False),
         ).count()
 
-        remaining = pkg.total_sessions - used
-        remaining = max(remaining, 0)
+        remaining = max(pkg.total_sessions - used, 0)
         total_remaining += remaining
 
         result.append({

@@ -119,9 +119,11 @@ def _get_remaining_info(db: Session, member_id: int) -> str:
 
     if packages:
         for pkg in packages:
+            # BR-3.2: 무료 체험은 유료 잔여에 미포함
             used = db.query(PTSession).filter(
                 PTSession.package_id == pkg.id,
                 PTSession.status.in_(["completed", "no_show"]),
+                PTSession.is_trial.is_(False),
             ).count()
             remaining = pkg.total_sessions - used
             result += f"  PT: {max(remaining, 0)}회 남음\n"

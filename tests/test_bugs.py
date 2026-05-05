@@ -169,3 +169,106 @@ class TestB2_FreezeExpiryExtension:
         resp = client.get(f"/api/members/{mid}/detail")
         data = resp.json()
         assert data["membership"]["expiry_date"] == "2026-01-31"
+
+
+# ---------------------------------------------------------------------------
+# B3. PT 잔여 횟수가 정확하지 않음
+# ---------------------------------------------------------------------------
+class TestB3_PTRemaining:
+    """
+    BR-3.2/BR-5.3:
+      - 무료 체험(is_trial)은 잔여 횟수 계산에서 제외
+      - 사용 횟수 = completed + no_show (cancelled 제외)
+      - 패키지별로 독립 계산 (다중 패키지 시 다른 패키지 사용분이 영향 X)
+    """
+
+    def _seed_trainer(self, db, center_id):
+        t = Trainer(name="트레이너1", center_id=center_id, specialties="근력강화",
+                    max_clients=20, current_clients=0)
+        db.add(t); db.commit(); db.refresh(t)
+        return t
+
+    def test_trial_sessions_excluded_from_remaining(self):
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            member = _seed_member(db, center.id, name="체험회원")
+            trainer = self._seed_trainer(db, center.id)
+
+            pkg = PTPackage(
+                member_id=member.id, trainer_id=trainer.id,
+                total_sessions=10, price=500000, status="active",
+            )
+            db.add(pkg); db.commit(); db.refresh(pkg)
+
+            # 유료: completed 3, no_show 1, cancelled 1
+            for _ in range(3):
+                db.add(PTSession(package_id=pkg.id, member_id=member.id,
+                                 trainer_id=trainer.id, scheduled_at=datetime(2026, 1, 5),
+                                 status="completed", is_trial=False))
+            db.add(PTSession(package_id=pkg.id, member_id=member.id,
+                             trainer_id=trainer.id, scheduled_at=datetime(2026, 1, 6),
+                             status="no_show", is_trial=False))
+            db.add(PTSession(package_id=pkg.id, member_id=member.id,
+                             trainer_id=trainer.id, scheduled_at=datetime(2026, 1, 7),
+                             status="cancelled", is_trial=False))
+            # 무료 체험: completed 2 (잔여 횟수에 포함되면 안 됨)
+            for _ in range(2):
+                db.add(PTSession(package_id=None, member_id=member.id,
+                                 trainer_id=trainer.id, scheduled_at=datetime(2026, 1, 4),
+                                 status="completed", is_trial=True))
+            db.commit()
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/pt/remaining/{mid}")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # 사용 = completed(3) + no_show(1) = 4. 잔여 = 10 - 4 = 6.
+        assert data["total_remaining"] == 6, (
+            f"잔여 = 10(total) - 4(paid completed+no_show) = 6, 실제 {data}"
+        )
+        assert data["packages"][0]["used"] == 4
+        assert data["packages"][0]["remaining"] == 6
+
+    def test_multiple_packages_counted_independently(self):
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            member = _seed_member(db, center.id, name="멀티패키지")
+            trainer = self._seed_trainer(db, center.id)
+
+            pkg_a = PTPackage(member_id=member.id, trainer_id=trainer.id,
+                              total_sessions=10, price=500000, status="active")
+            pkg_b = PTPackage(member_id=member.id, trainer_id=trainer.id,
+                              total_sessions=20, price=900000, status="active")
+            db.add_all([pkg_a, pkg_b]); db.commit()
+            db.refresh(pkg_a); db.refresh(pkg_b)
+
+            # pkg_a에 5회 completed
+            for _ in range(5):
+                db.add(PTSession(package_id=pkg_a.id, member_id=member.id,
+                                 trainer_id=trainer.id, scheduled_at=datetime(2026, 1, 5),
+                                 status="completed", is_trial=False))
+            # pkg_b에 3회 completed
+            for _ in range(3):
+                db.add(PTSession(package_id=pkg_b.id, member_id=member.id,
+                                 trainer_id=trainer.id, scheduled_at=datetime(2026, 1, 6),
+                                 status="completed", is_trial=False))
+            db.commit()
+            mid = member.id
+            pkg_a_id, pkg_b_id = pkg_a.id, pkg_b.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/pt/remaining/{mid}")
+        data = resp.json()
+        # 잔여 합계: (10-5) + (20-3) = 5 + 17 = 22
+        # 버그 시: 각 패키지가 회원 전체 사용량(8)으로 차감 → (10-8) + (20-8) = 14 (잘못)
+        assert data["total_remaining"] == 22, (
+            f"패키지별 독립 카운트 실패: {data}"
+        )
+        by_pkg = {p["package_id"]: p for p in data["packages"]}
+        assert by_pkg[pkg_a_id]["used"] == 5
+        assert by_pkg[pkg_b_id]["used"] == 3
