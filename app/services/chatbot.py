@@ -4,7 +4,10 @@
 """
 from sqlalchemy.orm import Session
 from app.models import Member, Membership, PTSession, PTPackage, Center
-from app.services.membership_calculator import calculate_expiry_date
+from app.services.membership_calculator import (
+    calculate_expiry_date,
+    get_freeze_periods_for_membership,
+)
 from datetime import date
 
 
@@ -101,7 +104,8 @@ def _get_remaining_info(db: Session, member_id: int) -> str:
     result = f"{member.name}님의 잔여 정보:\n"
 
     if membership:
-        expiry = calculate_expiry_date(membership)
+        freeze_periods = get_freeze_periods_for_membership(db, membership)
+        expiry = calculate_expiry_date(membership, freeze_periods)
         remaining = (expiry - date.today()).days
         result += f"  회원권: {max(remaining, 0)}일 남음\n"
     else:
@@ -141,5 +145,6 @@ def _get_expiry_info(db: Session, member_id: int) -> str:
     if not membership:
         return f"{member.name}님은 현재 활성 회원권이 없습니다."
 
-    expiry = calculate_expiry_date(membership)
+    freeze_periods = get_freeze_periods_for_membership(db, membership)
+    expiry = calculate_expiry_date(membership, freeze_periods)
     return f"{member.name}님의 회원권 만료일: {expiry}"

@@ -9,7 +9,11 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import Member, Center, Membership, PTPackage, PTSession
-from app.services.membership_calculator import calculate_expiry_date, calculate_remaining_days
+from app.services.membership_calculator import (
+    calculate_expiry_date,
+    calculate_remaining_days,
+    get_freeze_periods_for_membership,
+)
 
 router = APIRouter()
 
@@ -113,7 +117,8 @@ def get_member_detail(member_id: int, db: Session = Depends(get_db)):
     ).order_by(Membership.created_at.desc()).first()
 
     if membership:
-        expiry_date = calculate_expiry_date(membership)
+        freeze_periods = get_freeze_periods_for_membership(db, membership)
+        expiry_date = calculate_expiry_date(membership, freeze_periods)
 
         # 방문(PT 세션) 기록 기반 예측
         visits = db.query(PTSession).filter(
@@ -121,7 +126,7 @@ def get_member_detail(member_id: int, db: Session = Depends(get_db)):
             PTSession.status.in_(["completed", "no_show"]),
         ).all()
 
-        prediction = calculate_remaining_days(membership, visits)
+        prediction = calculate_remaining_days(membership, visits, freeze_periods)
 
         result["membership"] = {
             "id": membership.id,

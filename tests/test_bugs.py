@@ -103,3 +103,69 @@ class TestB1_InfinityExhaustion:
         if isinstance(exhaustion, float):
             assert exhaustion == exhaustion, "NaN 금지"  # NaN != NaN
             assert exhaustion != float("inf") and exhaustion != float("-inf")
+
+
+# ---------------------------------------------------------------------------
+# B2. 동결 회원의 만료일이 동결 기간만큼 연장되지 않음
+# ---------------------------------------------------------------------------
+class TestB2_FreezeExpiryExtension:
+    """BR-2.2: 동결 일수만큼 만료일이 연장되어야 한다."""
+
+    def test_expiry_extended_by_freeze_days(self):
+        """1월 1일 시작, 30일 회원권, 1/10~1/15 동결(6일) → 만료일 2/5 (BR 예시)."""
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            member = _seed_member(db, center.id, name="동결회원")
+            membership = Membership(
+                member_id=member.id, type="1month",
+                start_date=date(2026, 1, 1), duration_days=30,
+                price=100000, status="active",
+            )
+            db.add(membership)
+            db.commit()
+            db.refresh(membership)
+
+            db.add(FreezePeriod(
+                member_id=member.id,
+                membership_id=membership.id,
+                start_date=date(2026, 1, 10),
+                end_date=date(2026, 1, 15),
+                reason="출장",
+            ))
+            db.commit()
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/members/{mid}/detail")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["membership"] is not None
+        # BR 예시: 1/1 시작 + 30일 = 1/31, 1/10~1/15 동결 → 만료일 2/5.
+        # 시스템 컨벤션은 (end - start).days = 5 (exclusive). memberships.py의
+        # freeze 일수 계산과 동일하게 가야 일관됨. BR의 '6일' 표기는 inclusive
+        # 날짜 수이고, 실제 결과값 2/5와 부합하는 것은 5일(exclusive) 계산.
+        assert data["membership"]["expiry_date"] == "2026-02-05", (
+            f"동결 일수 만큼 만료일 연장 실패: {data['membership']['expiry_date']}"
+        )
+
+    def test_no_freeze_keeps_original_expiry(self):
+        """동결 이력이 없으면 만료일은 start_date + duration_days 그대로."""
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            member = _seed_member(db, center.id, name="비동결회원")
+            db.add(Membership(
+                member_id=member.id, type="1month",
+                start_date=date(2026, 1, 1), duration_days=30,
+                price=100000, status="active",
+            ))
+            db.commit()
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/members/{mid}/detail")
+        data = resp.json()
+        assert data["membership"]["expiry_date"] == "2026-01-31"

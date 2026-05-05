@@ -9,7 +9,11 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import Membership, Member, FreezePeriod
-from app.services.membership_calculator import calculate_expiry_date, calculate_remaining_days
+from app.services.membership_calculator import (
+    calculate_expiry_date,
+    calculate_remaining_days,
+    get_freeze_periods_for_membership,
+)
 from app.services.refund import calculate_refund
 
 router = APIRouter()
@@ -113,7 +117,8 @@ def get_expiry_date(membership_id: int, db: Session = Depends(get_db)):
     if not membership:
         raise HTTPException(status_code=404, detail="회원권을 찾을 수 없습니다")
 
-    expiry = calculate_expiry_date(membership)
+    freeze_periods = get_freeze_periods_for_membership(db, membership)
+    expiry = calculate_expiry_date(membership, freeze_periods)
     remaining = (expiry - date.today()).days
 
     return {
