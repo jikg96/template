@@ -343,3 +343,99 @@ class TestB4_NewMembersTimezone:
         jan26 = client.get("/api/analytics/new-members?year=2026&month=1").json()
         assert dec25["new_members"] == 0, f"12월에 잘못 포함: {dec25}"
         assert jan26["new_members"] == 1, f"1월에 누락: {jan26}"
+
+
+# ---------------------------------------------------------------------------
+# B5. PT 매칭 추천 시 특정 트레이너만 반복 편중
+# ---------------------------------------------------------------------------
+class TestB5_TrainerMatching:
+    """
+    BR-4.1: specialties는 정확 일치 매칭 (부분 매칭 금지).
+    BR-4.2: 가용량(current_clients < max_clients)이 있는 트레이너만 추천.
+            동일 조건 시 가용량이 많은 트레이너 우선.
+    """
+
+    def _seed_trainer(self, db, center_id, name, specialties,
+                      max_clients=20, current_clients=0):
+        t = Trainer(name=name, center_id=center_id, specialties=specialties,
+                    max_clients=max_clients, current_clients=current_clients)
+        db.add(t); db.commit(); db.refresh(t)
+        return t
+
+    def test_full_capacity_trainer_excluded(self):
+        """가용량 0 (current==max)인 트레이너는 추천 대상에서 제외."""
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            # 인기 트레이너: 가득 참
+            self._seed_trainer(db, center.id, "인기쌤", "체중감량,근력강화",
+                               max_clients=15, current_clients=15)
+            # 여유 있는 트레이너
+            self._seed_trainer(db, center.id, "여유쌤", "체중감량",
+                               max_clients=20, current_clients=5)
+            member = _seed_member(db, center.id, name="고객", goal="체중감량")
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/matching/recommend/{mid}")
+        data = resp.json()
+        assert data["recommendation"] is not None, f"추천 없음: {data}"
+        assert data["recommendation"]["name"] == "여유쌤", (
+            f"가득 찬 인기쌤이 추천됨 (BR-4.2 위반): {data}"
+        )
+
+    def test_prefers_trainer_with_more_capacity(self):
+        """동일 매칭 조건 중 가용량이 많은 트레이너가 우선."""
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            self._seed_trainer(db, center.id, "조금여유쌤", "근력강화",
+                               max_clients=20, current_clients=18)  # 잔여 2
+            self._seed_trainer(db, center.id, "많이여유쌤", "근력강화",
+                               max_clients=20, current_clients=5)   # 잔여 15
+            member = _seed_member(db, center.id, name="고객2", goal="근력강화")
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/matching/recommend/{mid}")
+        data = resp.json()
+        assert data["recommendation"]["name"] == "많이여유쌤", (
+            f"가용량 우선순위 실패: {data}"
+        )
+
+    def test_specialty_exact_match_only(self):
+        """BR-4.1: 부분 매칭 금지. '체중'은 '체중감량' 매칭 안 됨."""
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            self._seed_trainer(db, center.id, "감량쌤", "체중감량,근력강화",
+                               max_clients=20, current_clients=0)
+            # 회원 goal = "체중" (부분 키워드)
+            member = _seed_member(db, center.id, name="부분키워드", goal="체중")
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/matching/recommend/{mid}")
+        data = resp.json()
+        assert data["recommendation"] is None, (
+            f"부분 매칭이 허용됨 (BR-4.1 위반): {data}"
+        )
+
+    def test_no_matching_trainer_returns_none(self):
+        """매칭 없으면 None."""
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            self._seed_trainer(db, center.id, "재활전문", "재활",
+                               max_clients=20, current_clients=0)
+            member = _seed_member(db, center.id, name="다른목표", goal="스포츠")
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/matching/recommend/{mid}")
+        data = resp.json()
+        assert data["recommendation"] is None
