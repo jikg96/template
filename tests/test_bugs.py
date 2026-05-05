@@ -439,3 +439,136 @@ class TestB5_TrainerMatching:
         resp = client.get(f"/api/matching/recommend/{mid}")
         data = resp.json()
         assert data["recommendation"] is None
+
+
+# ===========================================================================
+# 경계값 / 회귀 방지 테스트 (Phase 2 보강)
+# 각 버그의 root cause 주변에서 미래에 다시 깨질 수 있는 지점을 잠근다.
+# ===========================================================================
+class TestB1_BoundaryExpiredMembership:
+    """B1 회귀: 만료된 회원권은 status='expired'로 응답하고 잔여 0이어야 한다."""
+
+    def test_expired_membership_returns_zero_and_expired_status(self):
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            member = _seed_member(db, center.id, name="만료자")
+            # 시작 1년 전, 30일 회원권 → 명백히 만료
+            db.add(Membership(
+                member_id=member.id, type="1month",
+                start_date=date.today() - timedelta(days=400),
+                duration_days=30, price=100000, status="active",
+            ))
+            db.commit()
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/members/{mid}/detail")
+        data = resp.json()
+        m = data["membership"]
+        assert m["status"] == "expired", f"만료 status 미반영: {m}"
+        assert m["remaining_days"] == 0
+        assert m["estimated_exhaustion_days"] == 0
+
+
+class TestB2_BoundaryMultipleFreezes:
+    """B2 회귀: 한 회원권에 동결 이력 2건 이상이면 일수 합산이 만료일에 반영되어야 한다."""
+
+    def test_multiple_freeze_periods_summed(self):
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            member = _seed_member(db, center.id, name="다중동결")
+            membership = Membership(
+                member_id=member.id, type="1month",
+                start_date=date(2026, 1, 1), duration_days=30,
+                price=100000, status="active",
+            )
+            db.add(membership); db.commit(); db.refresh(membership)
+
+            # 5일 + 7일 = 12일 추가 (exclusive 컨벤션)
+            db.add(FreezePeriod(member_id=member.id, membership_id=membership.id,
+                                start_date=date(2026, 1, 5), end_date=date(2026, 1, 10),
+                                reason="A"))
+            db.add(FreezePeriod(member_id=member.id, membership_id=membership.id,
+                                start_date=date(2026, 1, 15), end_date=date(2026, 1, 22),
+                                reason="B"))
+            db.commit()
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/members/{mid}/detail")
+        data = resp.json()
+        # 1/1 + 30 + 12 = 1/31 + 12 = 2/12
+        assert data["membership"]["expiry_date"] == "2026-02-12", (
+            f"다중 동결 합산 실패: {data['membership']['expiry_date']}"
+        )
+
+
+class TestB3_BoundaryUsedExceedsTotal:
+    """
+    B3 회귀: 데이터 오염으로 사용량이 패키지 총 횟수를 초과해도
+    remaining은 음수가 아닌 0으로 클램핑되어야 한다.
+    (시드의 _seed_data_inconsistencies overflow 케이스 대응)
+    """
+
+    def test_remaining_clamped_to_zero_on_overflow(self):
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            member = _seed_member(db, center.id, name="오버플로우")
+            trainer = Trainer(name="t", center_id=center.id, specialties="근력강화",
+                              max_clients=20, current_clients=0)
+            db.add(trainer); db.commit(); db.refresh(trainer)
+
+            pkg = PTPackage(member_id=member.id, trainer_id=trainer.id,
+                            total_sessions=10, price=500000, status="active")
+            db.add(pkg); db.commit(); db.refresh(pkg)
+
+            # 13회 completed (총 10회 초과)
+            for _ in range(13):
+                db.add(PTSession(package_id=pkg.id, member_id=member.id,
+                                 trainer_id=trainer.id, scheduled_at=datetime(2026, 1, 5),
+                                 status="completed", is_trial=False))
+            db.commit()
+            mid = member.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/pt/remaining/{mid}")
+        data = resp.json()
+        pkg_data = data["packages"][0]
+        assert pkg_data["used"] == 13
+        assert pkg_data["remaining"] == 0, f"음수 클램핑 실패: {pkg_data}"
+        assert data["total_remaining"] == 0
+
+
+class TestB5_BoundaryTiebreak:
+    """B5 회귀: 동일 가용량 트레이너 동률 시 id ASC 결정적 정렬이 유지되는지."""
+
+    def test_equal_capacity_picks_lower_id(self):
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            # 둘 다 max_clients=20, current_clients=5 → 잔여 15 동률
+            t1 = Trainer(name="먼저쌤", center_id=center.id, specialties="재활",
+                         max_clients=20, current_clients=5)
+            t2 = Trainer(name="나중쌤", center_id=center.id, specialties="재활",
+                         max_clients=20, current_clients=5)
+            db.add_all([t1, t2]); db.commit()
+            db.refresh(t1); db.refresh(t2)
+
+            member = _seed_member(db, center.id, name="고객", goal="재활")
+            mid = member.id
+            t1_id = t1.id
+        finally:
+            db.close()
+
+        resp = client.get(f"/api/matching/recommend/{mid}")
+        data = resp.json()
+        # 동률이면 id ASC → 먼저 등록된 t1
+        assert data["recommendation"]["trainer_id"] == t1_id, (
+            f"동률 tiebreak 실패: {data}"
+        )
