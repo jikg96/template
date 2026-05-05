@@ -2,27 +2,40 @@
 통계 집계 서비스
 - 월별 신규 회원, 센터별 현황, PT 소화율, 매출
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 
 from app.models import Member, Membership, PTSession, PTPackage
 
 
+# BR-5.1: 모든 통계는 KST(UTC+9) 기준. DB는 naive UTC 저장 가정.
+KST_OFFSET = timedelta(hours=9)
+
+
+def _kst_month_range_to_utc(year: int, month: int) -> tuple[datetime, datetime]:
+    """KST 월 경계 [start, end)를 naive UTC 경계로 변환."""
+    kst_start = datetime(year, month, 1)
+    if month == 12:
+        kst_end = datetime(year + 1, 1, 1)
+    else:
+        kst_end = datetime(year, month + 1, 1)
+    # KST 시각을 UTC로: 같은 절대 시각의 UTC = KST - 9h
+    return kst_start - KST_OFFSET, kst_end - KST_OFFSET
+
+
 def get_new_members_count(db: Session, year: int, month: int) -> int:
     """
-    월별 신규 회원 수 집계
-    - joined_at 기준으로 해당 월의 신규 가입자 수 반환
+    월별 신규 회원 수 집계 (BR-5.1: KST 기준).
+
+    DB의 joined_at은 naive UTC로 저장된다는 가정 하에,
+    KST 월 경계를 UTC로 -9h 시프트하여 비교한다.
     """
-    start = datetime(year, month, 1)
-    if month == 12:
-        end = datetime(year + 1, 1, 1)
-    else:
-        end = datetime(year, month + 1, 1)
+    utc_start, utc_end = _kst_month_range_to_utc(year, month)
 
     count = db.query(Member).filter(
-        Member.joined_at >= start,
-        Member.joined_at < end,
+        Member.joined_at >= utc_start,
+        Member.joined_at < utc_end,
         Member.deleted_at.is_(None),
     ).count()
 
@@ -65,25 +78,19 @@ def get_pt_completion_rate(db: Session, trainer_id: int = None) -> float:
 
 def get_revenue_summary(db: Session, year: int, month: int) -> dict:
     """
-    월별 매출 요약
+    월별 매출 요약 (BR-5.1: KST 기준).
     - 회원권 매출 + PT 매출
     """
-    start = datetime(year, month, 1)
-    if month == 12:
-        end = datetime(year + 1, 1, 1)
-    else:
-        end = datetime(year, month + 1, 1)
+    utc_start, utc_end = _kst_month_range_to_utc(year, month)
 
-    # 회원권 매출
     membership_revenue = db.query(func.sum(Membership.price)).filter(
-        Membership.created_at >= start,
-        Membership.created_at < end,
+        Membership.created_at >= utc_start,
+        Membership.created_at < utc_end,
     ).scalar() or 0
 
-    # PT 패키지 매출
     pt_revenue = db.query(func.sum(PTPackage.price)).filter(
-        PTPackage.created_at >= start,
-        PTPackage.created_at < end,
+        PTPackage.created_at >= utc_start,
+        PTPackage.created_at < utc_end,
     ).scalar() or 0
 
     return {

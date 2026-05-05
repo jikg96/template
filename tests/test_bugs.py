@@ -272,3 +272,74 @@ class TestB3_PTRemaining:
         by_pkg = {p["package_id"]: p for p in data["packages"]}
         assert by_pkg[pkg_a_id]["used"] == 5
         assert by_pkg[pkg_b_id]["used"] == 3
+
+
+# ---------------------------------------------------------------------------
+# B4. 월별 신규 가입 통계가 실제 회원 목록과 불일치 (KST/UTC)
+# ---------------------------------------------------------------------------
+class TestB4_NewMembersTimezone:
+    """
+    BR-5.1: 모든 날짜는 KST(UTC+9) 기준 집계.
+    DB는 UTC로 저장되므로, 월 경계 비교 시 KST → UTC 변환이 필요.
+
+    예: KST 2026-02-01 00:30 가입 = UTC 2026-01-31 15:30 저장.
+        이 회원은 2월 신규에 포함되어야 하고, 1월에는 포함되면 안 됨.
+    """
+
+    def test_kst_boundary_member_counted_in_correct_month(self):
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            # KST 2026-02-01 00:30 가입자 → UTC datetime(2026, 1, 31, 15, 30)
+            kst_feb_member = Member(
+                name="KST2월가입자", phone="010-0000-0001", email="a@x.com",
+                center_id=center.id, status="active",
+                joined_at=datetime(2026, 1, 31, 15, 30),  # = KST 2/1 00:30
+            )
+            # 명백히 1월 가입자: KST 2026-01-15 12:00 = UTC 2026-01-15 03:00
+            jan_member = Member(
+                name="1월정상가입자", phone="010-0000-0002", email="b@x.com",
+                center_id=center.id, status="active",
+                joined_at=datetime(2026, 1, 15, 3, 0),
+            )
+            # 명백히 2월 가입자: KST 2026-02-10 12:00 = UTC 2026-02-10 03:00
+            feb_member = Member(
+                name="2월정상가입자", phone="010-0000-0003", email="c@x.com",
+                center_id=center.id, status="active",
+                joined_at=datetime(2026, 2, 10, 3, 0),
+            )
+            db.add_all([kst_feb_member, jan_member, feb_member])
+            db.commit()
+        finally:
+            db.close()
+
+        jan = client.get("/api/analytics/new-members?year=2026&month=1").json()
+        feb = client.get("/api/analytics/new-members?year=2026&month=2").json()
+
+        # 1월: jan_member만 (1명). KST 경계 회원은 2월로 가야 함.
+        assert jan["new_members"] == 1, f"1월 카운트가 KST 기준과 다름: {jan}"
+        # 2월: feb_member + kst_feb_member (2명).
+        assert feb["new_members"] == 2, f"2월 카운트가 KST 기준과 다름: {feb}"
+
+    def test_year_boundary_kst(self):
+        """
+        KST 2026-01-01 00:30 가입자 = UTC 2025-12-31 15:30.
+        1월 신규로 잡혀야 하고, 12월에는 잡히지 않아야 함.
+        """
+        db = TestingSessionLocal()
+        try:
+            center = _seed_center(db)
+            kst_jan_member = Member(
+                name="KST1월", phone="010-0000-0010", email="y@x.com",
+                center_id=center.id, status="active",
+                joined_at=datetime(2025, 12, 31, 15, 30),  # = KST 2026/1/1 00:30
+            )
+            db.add(kst_jan_member)
+            db.commit()
+        finally:
+            db.close()
+
+        dec25 = client.get("/api/analytics/new-members?year=2025&month=12").json()
+        jan26 = client.get("/api/analytics/new-members?year=2026&month=1").json()
+        assert dec25["new_members"] == 0, f"12월에 잘못 포함: {dec25}"
+        assert jan26["new_members"] == 1, f"1월에 누락: {jan26}"
